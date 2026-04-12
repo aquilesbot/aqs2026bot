@@ -46,37 +46,38 @@ TEAM_STRENGTH = {
     "real madrid": 96,
     "barcelona": 94,
     "manchester city": 97,
-    "arsenal": 90,
+    "arsenal": 91,
     "liverpool": 92,
-    "chelsea": 86,
-    "manchester united": 84,
+    "chelsea": 85,
+    "manchester united": 83,
+    "newcastle": 82,
+    "tottenham": 84,
+    "aston villa": 81,
     "bayern munich": 95,
+    "borussia dortmund": 85,
     "inter": 90,
     "inter milan": 90,
     "juventus": 87,
     "milan": 86,
-    "napoli": 85,
-    "psg": 93,
-    "flamengo": 88,
-    "palmeiras": 89,
-    "corinthians": 80,
-    "são paulo": 82,
-    "santos": 78,
-    "botafogo": 83,
-    "atlético mineiro": 84,
-    "gremio": 81,
-    "grêmio": 81,
-    "internacional": 80,
+    "napoli": 86,
     "roma": 83,
     "lazio": 82,
     "atalanta": 84,
-    "borussia dortmund": 85,
-    "atlético madrid": 88,
+    "psg": 93,
     "atletico madrid": 88,
+    "atlético madrid": 88,
     "sevilla": 80,
-    "newcastle": 82,
-    "tottenham": 84,
-    "aston villa": 81,
+    "flamengo": 88,
+    "palmeiras": 89,
+    "botafogo": 84,
+    "atlético mineiro": 84,
+    "atletico mineiro": 84,
+    "corinthians": 80,
+    "são paulo": 82,
+    "santos": 78,
+    "grêmio": 81,
+    "gremio": 81,
+    "internacional": 80,
 }
 
 started_scheduler = False
@@ -84,35 +85,39 @@ started_scheduler = False
 
 def load_state():
     if not STATE_FILE.exists():
-        return {
-            "chat_id": None,
-            "alerts_enabled": False,
-            "last_alert_date": None,
-        }
+        return {"chat_id": None, "alerts_enabled": False, "last_alert_date": None}
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
-        return {
-            "chat_id": None,
-            "alerts_enabled": False,
-            "last_alert_date": None,
-        }
+        return {"chat_id": None, "alerts_enabled": False, "last_alert_date": None}
 
 
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def send(chat_id, text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": text,
-        },
-        timeout=30,
-    )
+def telegram_post(method, payload):
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    return requests.post(url, json=payload, timeout=30)
+
+
+def menu_keyboard():
+    return {
+        "keyboard": [
+            [{"text": "/today"}, {"text": "/best"}],
+            [{"text": "/top"}, {"text": "/tip"}],
+            [{"text": "/alert_on"}, {"text": "/status"}],
+        ],
+        "resize_keyboard": True,
+        "persistent": True,
+    }
+
+
+def send(chat_id, text, with_menu=False):
+    payload = {"chat_id": chat_id, "text": text}
+    if with_menu:
+        payload["reply_markup"] = menu_keyboard()
+    telegram_post("sendMessage", payload)
 
 
 def now_local():
@@ -138,31 +143,47 @@ def get_team_strength(team_name):
 
 def league_bonus(league_name):
     league = normalize(league_name)
-
     mapping = {
-        "uefa champions league": 32,
-        "english premier league": 27,
-        "premier league": 27,
-        "spanish la liga": 25,
-        "la liga": 25,
-        "italian serie a": 23,
-        "serie a": 23,
-        "german bundesliga": 22,
-        "bundesliga": 22,
+        "uefa champions league": 34,
+        "english premier league": 28,
+        "premier league": 28,
+        "spanish la liga": 26,
+        "la liga": 26,
+        "italian serie a": 24,
+        "serie a": 24,
+        "german bundesliga": 23,
+        "bundesliga": 23,
         "french ligue 1": 18,
         "ligue 1": 18,
-        "brazilian serie a": 21,
-        "brasileirão": 21,
-        "copa libertadores": 25,
-        "libertadores": 25,
+        "brazilian serie a": 22,
+        "brasileirão": 22,
+        "copa libertadores": 26,
+        "libertadores": 26,
         "copa sudamericana": 16,
         "sudamericana": 16,
     }
-
     for key, value in mapping.items():
         if key in league:
             return value
     return 10
+
+
+def confidence_label(diff):
+    adiff = abs(diff)
+    if adiff <= 2:
+        return "baixa"
+    if adiff <= 5:
+        return "média"
+    return "alta"
+
+
+def balance_label(diff):
+    adiff = abs(diff)
+    if adiff <= 2:
+        return "muito equilibrado"
+    if adiff <= 5:
+        return "relativamente equilibrado"
+    return "desequilibrado"
 
 
 def predict_match(home, away, league):
@@ -171,34 +192,37 @@ def predict_match(home, away, league):
     bonus = league_bonus(league)
 
     diff = home_strength - away_strength
-    raw_score = 50 + bonus + min((home_strength + away_strength) / 4, 25)
+    raw_score = 48 + bonus + min((home_strength + away_strength) / 4, 25)
     game_score = int(round(min(raw_score, 99)))
 
-    if abs(diff) <= 2:
-        prediction = "jogo muito equilibrado"
-        suggestion = "mercado mais seguro: evitar vencedor seco"
-        tip = "equilíbrio alto, tendência de jogo duro"
-        risk = "alto"
-    elif diff > 2 and diff <= 6:
-        prediction = f"leve favoritismo de {home}"
-        suggestion = f"{home} ou empate"
-        tip = f"{home} chega ligeiramente melhor"
-        risk = "médio"
-    elif diff > 6:
+    if diff >= 7:
         prediction = f"favoritismo claro de {home}"
         suggestion = f"vitória de {home}"
-        tip = f"{home} tem vantagem técnica no confronto"
+        tip = f"{home} tem vantagem técnica e mando a favor"
         risk = "médio"
-    elif diff < -2 and diff >= -6:
-        prediction = f"leve favoritismo de {away}"
-        suggestion = f"{away} ou empate"
-        tip = f"{away} parece mais forte no confronto"
+    elif diff >= 3:
+        prediction = f"leve favoritismo de {home}"
+        suggestion = f"{home} ou empate"
+        tip = f"{home} chega um pouco acima no confronto"
         risk = "médio"
-    else:
+    elif diff <= -7:
         prediction = f"favoritismo claro de {away}"
         suggestion = f"vitória de {away}"
-        tip = f"{away} tem vantagem técnica no confronto"
+        tip = f"{away} tem elenco mais forte no confronto"
         risk = "médio"
+    elif diff <= -3:
+        prediction = f"leve favoritismo de {away}"
+        suggestion = f"{away} ou empate"
+        tip = f"{away} parece ligeiramente superior tecnicamente"
+        risk = "médio"
+    else:
+        prediction = "jogo muito equilibrado"
+        suggestion = "evitar vencedor seco"
+        tip = "equilíbrio alto, melhor tratar como duelo aberto"
+        risk = "alto"
+
+    confidence = confidence_label(diff)
+    balance = balance_label(diff)
 
     if game_score >= 95:
         insight = "jogo enorme do dia"
@@ -209,6 +233,13 @@ def predict_match(home, away, league):
     else:
         insight = "jogo interessante do dia"
 
+    analysis_text = (
+        f"{prediction}. "
+        f"Confronto {balance}. "
+        f"Confiança da leitura: {confidence}. "
+        f"{tip}."
+    )
+
     return {
         "score": game_score,
         "prediction": prediction,
@@ -216,17 +247,15 @@ def predict_match(home, away, league):
         "tip": tip,
         "risk": risk,
         "insight": insight,
-        "home_strength": round(home_strength, 1),
-        "away_strength": round(away_strength, 1),
+        "confidence": confidence,
+        "balance": balance,
+        "analysis_text": analysis_text,
     }
 
 
 def fetch_today_matches():
     url = f"{SPORTSDB_URL}/eventsday.php"
-    params = {
-        "d": get_today_date(),
-        "s": "Soccer",
-    }
+    params = {"d": get_today_date(), "s": "Soccer"}
 
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
@@ -259,6 +288,9 @@ def fetch_today_matches():
                 "tip": analysis["tip"],
                 "risk": analysis["risk"],
                 "insight": analysis["insight"],
+                "confidence": analysis["confidence"],
+                "balance": analysis["balance"],
+                "analysis_text": analysis["analysis_text"],
             }
         )
 
@@ -272,7 +304,7 @@ def format_best_match():
         return "⚠️ Não encontrei jogos grandes para hoje."
 
     best = matches[0]
-    lines = [
+    return "\n".join([
         "🔥 Jogo destaque do dia",
         "",
         f"{best['home']} x {best['away']}",
@@ -281,14 +313,12 @@ def format_best_match():
         f"📊 Nota do jogo: {best['score']}",
         "",
         "🧠 Análise:",
-        f"{best['prediction']}. {best['tip']}.",
+        best["analysis_text"],
         "",
         f"💡 Leitura rápida: {best['insight']}.",
-        "",
         f"🎯 Sugestão: {best['suggestion']}",
         f"⚠️ Risco: {best['risk']}",
-    ]
-    return "\n".join(lines)
+    ])
 
 
 def format_tip():
@@ -297,7 +327,7 @@ def format_tip():
         return "⚠️ Não encontrei jogos grandes para hoje."
 
     best = matches[0]
-    lines = [
+    return "\n".join([
         "💰 Sugestão do dia",
         "",
         f"{best['home']} x {best['away']}",
@@ -305,10 +335,9 @@ def format_tip():
         f"🕒 {best['time']}",
         "",
         f"📌 Entrada sugerida: {best['suggestion']}",
-        f"🧠 Justificativa: {best['prediction']}. {best['tip']}.",
+        f"🧠 Justificativa: {best['analysis_text']}",
         f"⚠️ Risco: {best['risk']}",
-    ]
-    return "\n".join(lines)
+    ])
 
 
 def format_top_matches(limit=5):
@@ -324,6 +353,7 @@ def format_top_matches(limit=5):
         lines.append(f"📊 Nota: {match['score']}")
         lines.append(f"🔮 Previsão: {match['prediction']}")
         lines.append(f"🎯 Sugestão: {match['suggestion']}")
+        lines.append(f"📌 Confiança: {match['confidence']}")
         lines.append("")
 
     lines.append("Use /best para o destaque e /tip para a sugestão do dia.")
@@ -342,6 +372,7 @@ def format_full_list(limit=12):
         )
         lines.append(f"   🔮 {match['prediction']}")
         lines.append(f"   🎯 {match['suggestion']}")
+        lines.append(f"   📌 confiança {match['confidence']}")
 
     return "\n".join(lines)
 
@@ -360,13 +391,11 @@ def send_daily_alert_if_needed():
 
     if now.hour != ALERT_HOUR:
         return
-
     if last_alert_date == today:
         return
 
     try:
-        text = format_best_match()
-        send(chat_id, text)
+        send(chat_id, format_best_match(), with_menu=True)
         state["last_alert_date"] = today
         save_state(state)
     except Exception:
@@ -387,8 +416,7 @@ def start_scheduler_once():
     if started_scheduler:
         return
     started_scheduler = True
-    thread = threading.Thread(target=scheduler_loop, daemon=True)
-    thread.start()
+    threading.Thread(target=scheduler_loop, daemon=True).start()
 
 
 @app.before_request
@@ -398,20 +426,18 @@ def ensure_scheduler():
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "service": "aqs2026bot-pro-max"})
+    return jsonify({"ok": True, "service": "aqs2026bot-pro-plus"})
 
 
 @app.route("/setup-webhook")
 def setup():
-    url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-    response = requests.post(
-        url,
-        json={
+    response = telegram_post(
+        "setWebhook",
+        {
             "url": f"{BASE_URL}/webhook",
             "secret_token": SECRET,
             "drop_pending_updates": True,
         },
-        timeout=30,
     )
     return jsonify(response.json())
 
@@ -438,7 +464,7 @@ def webhook():
         send(
             chat_id,
             "🤖 Bot analista PRO online.\n\n"
-            "Comandos disponíveis:\n"
+            "Toque nos botões abaixo ou use os comandos.\n\n"
             "/today - melhores jogos do dia\n"
             "/top - ranking maior\n"
             "/best - melhor jogo do dia\n"
@@ -446,35 +472,36 @@ def webhook():
             "/alert_on - ativar alerta automático\n"
             "/alert_off - desativar alerta automático\n"
             "/status - ver status do alerta",
+            with_menu=True,
         )
     elif text == "/today":
         try:
-            send(chat_id, format_top_matches(limit=5))
+            send(chat_id, format_top_matches(limit=5), with_menu=True)
         except Exception:
-            send(chat_id, "⚠️ Erro ao buscar jogos de hoje.")
+            send(chat_id, "⚠️ Erro ao buscar jogos de hoje.", with_menu=True)
     elif text == "/top":
         try:
-            send(chat_id, format_full_list(limit=12))
+            send(chat_id, format_full_list(limit=12), with_menu=True)
         except Exception:
-            send(chat_id, "⚠️ Erro ao montar o ranking.")
+            send(chat_id, "⚠️ Erro ao montar o ranking.", with_menu=True)
     elif text == "/best":
         try:
-            send(chat_id, format_best_match())
+            send(chat_id, format_best_match(), with_menu=True)
         except Exception:
-            send(chat_id, "⚠️ Erro ao gerar o destaque do dia.")
+            send(chat_id, "⚠️ Erro ao gerar o destaque do dia.", with_menu=True)
     elif text == "/tip":
         try:
-            send(chat_id, format_tip())
+            send(chat_id, format_tip(), with_menu=True)
         except Exception:
-            send(chat_id, "⚠️ Erro ao gerar a sugestão do dia.")
+            send(chat_id, "⚠️ Erro ao gerar a sugestão do dia.", with_menu=True)
     elif text == "/alert_on":
         state["alerts_enabled"] = True
         save_state(state)
-        send(chat_id, f"✅ Alerta automático ativado para {ALERT_HOUR}:00.")
+        send(chat_id, f"✅ Alerta automático ativado para {ALERT_HOUR}:00.", with_menu=True)
     elif text == "/alert_off":
         state["alerts_enabled"] = False
         save_state(state)
-        send(chat_id, "⛔ Alerta automático desativado.")
+        send(chat_id, "⛔ Alerta automático desativado.", with_menu=True)
     elif text == "/status":
         send(
             chat_id,
@@ -482,11 +509,14 @@ def webhook():
             f"Alertas: {'ativados' if state.get('alerts_enabled') else 'desativados'}\n"
             f"Hora do alerta: {ALERT_HOUR}:00\n"
             f"Timezone: {TIMEZONE}",
+            with_menu=True,
         )
     else:
         send(
             chat_id,
-            "Comandos disponíveis:\n/start\n/today\n/top\n/best\n/tip\n/alert_on\n/alert_off\n/status",
+            "Use os botões abaixo ou os comandos:\n"
+            "/today\n/top\n/best\n/tip\n/alert_on\n/alert_off\n/status",
+            with_menu=True,
         )
 
     return jsonify({"ok": True})
