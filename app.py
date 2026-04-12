@@ -138,6 +138,9 @@ def inline_menu():
                 {"text": "📋 Ranking", "callback_data": "top"},
             ],
             [
+                {"text": "🛡️ Jogos seguros", "callback_data": "safe"},
+            ],
+            [
                 {"text": "🔔 Ativar alerta", "callback_data": "alert_on"},
                 {"text": "⛔ Desativar alerta", "callback_data": "alert_off"},
             ],
@@ -413,6 +416,34 @@ def format_full_list(limit=12):
     return "\n".join(lines)
 
 
+def format_safe_bets(limit=5):
+    matches = fetch_today_matches()
+
+    safe_matches = [
+        m for m in matches
+        if m["confidence"] in ["alta", "muito alta"] and m["risk"] in ["médio-baixo", "médio"]
+    ]
+
+    if not safe_matches:
+        return "⚠️ Nenhum jogo seguro encontrado hoje."
+
+    safe_matches = safe_matches[:limit]
+
+    lines = ["🛡️ Jogos mais seguros do dia", ""]
+    for i, match in enumerate(safe_matches, start=1):
+        lines.append(f"{i}. {match['home']} x {match['away']}")
+        lines.append(f"🏆 {match['league']}")
+        lines.append(f"🕒 {match['time']}")
+        lines.append(f"📊 Nota: {match['score']}")
+        lines.append(f"🎯 Entrada: {match['suggestion']}")
+        lines.append(f"📌 Confiança: {match['confidence']}")
+        lines.append(f"⚠️ Risco: {match['risk']}")
+        lines.append("")
+
+    lines.append("Esses são os confrontos com leitura mais segura do dia.")
+    return "\n".join(lines)
+
+
 def format_status():
     state = load_state()
     return (
@@ -474,6 +505,8 @@ def handle_command(text, state):
         return format_best_match()
     if text == "/tip":
         return format_tip()
+    if text == "/safe":
+        return format_safe_bets(limit=5)
     if text == "/alert_on":
         state["alerts_enabled"] = True
         save_state(state)
@@ -485,9 +518,9 @@ def handle_command(text, state):
     if text == "/status":
         return format_status()
     return (
-        "🤖 Bot analista PRO online.\n\n"
+        "🤖 Bot analista PREMIUM online.\n\n"
         "Use os botões abaixo ou os comandos:\n"
-        "/today\n/top\n/best\n/tip\n/alert_on\n/alert_off\n/status"
+        "/today\n/top\n/best\n/tip\n/safe\n/alert_on\n/alert_off\n/status"
     )
 
 
@@ -498,7 +531,7 @@ def ensure_scheduler():
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "service": "aqs2026bot-premium"})
+    return jsonify({"ok": True, "service": "aqs2026bot-premium-safe"})
 
 
 @app.route("/setup-webhook")
