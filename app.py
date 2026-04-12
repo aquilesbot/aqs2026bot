@@ -22,9 +22,9 @@ SPORTSDB_URL = f"https://www.thesportsdb.com/api/v1/json/{SPORTSDB_KEY}"
 STATE_FILE = Path("/tmp/aqs2026bot_state.json")
 
 BIG_LEAGUES = {
+    "uefa champions league",
     "english premier league",
     "premier league",
-    "uefa champions league",
     "spanish la liga",
     "la liga",
     "italian serie a",
@@ -43,20 +43,20 @@ BIG_LEAGUES = {
 }
 
 TEAM_STRENGTH = {
-    "real madrid": 96,
+    "real madrid": 97,
     "barcelona": 94,
-    "manchester city": 97,
-    "arsenal": 91,
-    "liverpool": 92,
+    "manchester city": 98,
+    "arsenal": 92,
+    "liverpool": 93,
     "chelsea": 85,
     "manchester united": 83,
     "newcastle": 82,
     "tottenham": 84,
     "aston villa": 81,
-    "bayern munich": 95,
-    "borussia dortmund": 85,
-    "inter": 90,
-    "inter milan": 90,
+    "bayern munich": 96,
+    "borussia dortmund": 86,
+    "inter": 91,
+    "inter milan": 91,
     "juventus": 87,
     "milan": 86,
     "napoli": 86,
@@ -64,11 +64,11 @@ TEAM_STRENGTH = {
     "lazio": 82,
     "atalanta": 84,
     "psg": 93,
-    "atletico madrid": 88,
-    "atlético madrid": 88,
+    "atletico madrid": 89,
+    "atlético madrid": 89,
     "sevilla": 80,
-    "flamengo": 88,
-    "palmeiras": 89,
+    "flamengo": 89,
+    "palmeiras": 90,
     "botafogo": 84,
     "atlético mineiro": 84,
     "atletico mineiro": 84,
@@ -101,23 +101,51 @@ def telegram_post(method, payload):
     return requests.post(url, json=payload, timeout=30)
 
 
-def menu_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "/today"}, {"text": "/best"}],
-            [{"text": "/top"}, {"text": "/tip"}],
-            [{"text": "/alert_on"}, {"text": "/status"}],
-        ],
-        "resize_keyboard": True,
-        "persistent": True,
+def send(chat_id, text, reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
     }
-
-
-def send(chat_id, text, with_menu=False):
-    payload = {"chat_id": chat_id, "text": text}
-    if with_menu:
-        payload["reply_markup"] = menu_keyboard()
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     telegram_post("sendMessage", payload)
+
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    telegram_post("editMessageText", payload)
+
+
+def answer_callback(callback_id, text=""):
+    telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+
+
+def inline_menu():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔥 Jogo do dia", "callback_data": "best"},
+                {"text": "💰 Sugestão", "callback_data": "tip"},
+            ],
+            [
+                {"text": "⚽ Hoje", "callback_data": "today"},
+                {"text": "📋 Ranking", "callback_data": "top"},
+            ],
+            [
+                {"text": "🔔 Ativar alerta", "callback_data": "alert_on"},
+                {"text": "⛔ Desativar alerta", "callback_data": "alert_off"},
+            ],
+            [
+                {"text": "📌 Status", "callback_data": "status"},
+            ],
+        ]
+    }
 
 
 def now_local():
@@ -144,9 +172,9 @@ def get_team_strength(team_name):
 def league_bonus(league_name):
     league = normalize(league_name)
     mapping = {
-        "uefa champions league": 34,
-        "english premier league": 28,
-        "premier league": 28,
+        "uefa champions league": 36,
+        "english premier league": 29,
+        "premier league": 29,
         "spanish la liga": 26,
         "la liga": 26,
         "italian serie a": 24,
@@ -174,7 +202,9 @@ def confidence_label(diff):
         return "baixa"
     if adiff <= 5:
         return "média"
-    return "alta"
+    if adiff <= 8:
+        return "alta"
+    return "muito alta"
 
 
 def balance_label(diff):
@@ -186,49 +216,54 @@ def balance_label(diff):
     return "desequilibrado"
 
 
+def risk_label(diff):
+    adiff = abs(diff)
+    if adiff <= 2:
+        return "alto"
+    if adiff <= 5:
+        return "médio"
+    return "médio-baixo"
+
+
 def predict_match(home, away, league):
     home_strength = get_team_strength(home) + 3
     away_strength = get_team_strength(away)
     bonus = league_bonus(league)
 
     diff = home_strength - away_strength
-    raw_score = 48 + bonus + min((home_strength + away_strength) / 4, 25)
-    game_score = int(round(min(raw_score, 99)))
+    quality = min((home_strength + away_strength) / 4, 26)
+    game_score = int(round(min(48 + bonus + quality, 99)))
 
-    if diff >= 7:
+    if diff >= 8:
         prediction = f"favoritismo claro de {home}"
         suggestion = f"vitória de {home}"
-        tip = f"{home} tem vantagem técnica e mando a favor"
-        risk = "médio"
+        tip = f"{home} tem vantagem técnica clara e joga em casa"
     elif diff >= 3:
         prediction = f"leve favoritismo de {home}"
         suggestion = f"{home} ou empate"
         tip = f"{home} chega um pouco acima no confronto"
-        risk = "médio"
-    elif diff <= -7:
+    elif diff <= -8:
         prediction = f"favoritismo claro de {away}"
         suggestion = f"vitória de {away}"
         tip = f"{away} tem elenco mais forte no confronto"
-        risk = "médio"
     elif diff <= -3:
         prediction = f"leve favoritismo de {away}"
         suggestion = f"{away} ou empate"
         tip = f"{away} parece ligeiramente superior tecnicamente"
-        risk = "médio"
     else:
         prediction = "jogo muito equilibrado"
         suggestion = "evitar vencedor seco"
         tip = "equilíbrio alto, melhor tratar como duelo aberto"
-        risk = "alto"
 
     confidence = confidence_label(diff)
     balance = balance_label(diff)
+    risk = risk_label(diff)
 
-    if game_score >= 95:
+    if game_score >= 96:
         insight = "jogo enorme do dia"
-    elif game_score >= 88:
+    elif game_score >= 90:
         insight = "confronto muito forte"
-    elif game_score >= 78:
+    elif game_score >= 80:
         insight = "bom jogo para acompanhar"
     else:
         insight = "jogo interessante do dia"
@@ -254,10 +289,11 @@ def predict_match(home, away, league):
 
 
 def fetch_today_matches():
-    url = f"{SPORTSDB_URL}/eventsday.php"
-    params = {"d": get_today_date(), "s": "Soccer"}
-
-    response = requests.get(url, params=params, timeout=30)
+    response = requests.get(
+        f"{SPORTSDB_URL}/eventsday.php",
+        params={"d": get_today_date(), "s": "Soccer"},
+        timeout=30,
+    )
     response.raise_for_status()
     data = response.json()
     events = data.get("events") or []
@@ -356,7 +392,7 @@ def format_top_matches(limit=5):
         lines.append(f"📌 Confiança: {match['confidence']}")
         lines.append("")
 
-    lines.append("Use /best para o destaque e /tip para a sugestão do dia.")
+    lines.append("Toque nos botões abaixo para navegar.")
     return "\n".join(lines)
 
 
@@ -377,6 +413,16 @@ def format_full_list(limit=12):
     return "\n".join(lines)
 
 
+def format_status():
+    state = load_state()
+    return (
+        "📌 Status do bot\n\n"
+        f"Alertas: {'ativados' if state.get('alerts_enabled') else 'desativados'}\n"
+        f"Hora do alerta: {ALERT_HOUR}:00\n"
+        f"Timezone: {TIMEZONE}"
+    )
+
+
 def send_daily_alert_if_needed():
     state = load_state()
     chat_id = state.get("chat_id")
@@ -395,7 +441,7 @@ def send_daily_alert_if_needed():
         return
 
     try:
-        send(chat_id, format_best_match(), with_menu=True)
+        send(chat_id, format_best_match(), reply_markup=inline_menu())
         state["last_alert_date"] = today
         save_state(state)
     except Exception:
@@ -419,6 +465,32 @@ def start_scheduler_once():
     threading.Thread(target=scheduler_loop, daemon=True).start()
 
 
+def handle_command(text, state):
+    if text == "/today":
+        return format_top_matches(limit=5)
+    if text == "/top":
+        return format_full_list(limit=12)
+    if text == "/best":
+        return format_best_match()
+    if text == "/tip":
+        return format_tip()
+    if text == "/alert_on":
+        state["alerts_enabled"] = True
+        save_state(state)
+        return f"✅ Alerta automático ativado para {ALERT_HOUR}:00."
+    if text == "/alert_off":
+        state["alerts_enabled"] = False
+        save_state(state)
+        return "⛔ Alerta automático desativado."
+    if text == "/status":
+        return format_status()
+    return (
+        "🤖 Bot analista PRO online.\n\n"
+        "Use os botões abaixo ou os comandos:\n"
+        "/today\n/top\n/best\n/tip\n/alert_on\n/alert_off\n/status"
+    )
+
+
 @app.before_request
 def ensure_scheduler():
     start_scheduler_once()
@@ -426,7 +498,7 @@ def ensure_scheduler():
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "service": "aqs2026bot-pro-plus"})
+    return jsonify({"ok": True, "service": "aqs2026bot-premium"})
 
 
 @app.route("/setup-webhook")
@@ -449,6 +521,28 @@ def webhook():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
+
+    if "callback_query" in data:
+        callback = data["callback_query"]
+        callback_id = callback["id"]
+        message = callback.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        message_id = message.get("message_id")
+        action = callback.get("data", "")
+
+        if not chat_id or not message_id:
+            answer_callback(callback_id, "Erro")
+            return jsonify({"ok": True})
+
+        state = load_state()
+        state["chat_id"] = chat_id
+        save_state(state)
+
+        text = handle_command(f"/{action}", state)
+        edit_message(chat_id, message_id, text, reply_markup=inline_menu())
+        answer_callback(callback_id, "Atualizado")
+        return jsonify({"ok": True})
+
     msg = data.get("message", {})
     chat_id = msg.get("chat", {}).get("id")
     text = (msg.get("text") or "").strip().lower()
@@ -463,61 +557,12 @@ def webhook():
     if text == "/start":
         send(
             chat_id,
-            "🤖 Bot analista PRO online.\n\n"
-            "Toque nos botões abaixo ou use os comandos.\n\n"
-            "/today - melhores jogos do dia\n"
-            "/top - ranking maior\n"
-            "/best - melhor jogo do dia\n"
-            "/tip - sugestão do dia\n"
-            "/alert_on - ativar alerta automático\n"
-            "/alert_off - desativar alerta automático\n"
-            "/status - ver status do alerta",
-            with_menu=True,
-        )
-    elif text == "/today":
-        try:
-            send(chat_id, format_top_matches(limit=5), with_menu=True)
-        except Exception:
-            send(chat_id, "⚠️ Erro ao buscar jogos de hoje.", with_menu=True)
-    elif text == "/top":
-        try:
-            send(chat_id, format_full_list(limit=12), with_menu=True)
-        except Exception:
-            send(chat_id, "⚠️ Erro ao montar o ranking.", with_menu=True)
-    elif text == "/best":
-        try:
-            send(chat_id, format_best_match(), with_menu=True)
-        except Exception:
-            send(chat_id, "⚠️ Erro ao gerar o destaque do dia.", with_menu=True)
-    elif text == "/tip":
-        try:
-            send(chat_id, format_tip(), with_menu=True)
-        except Exception:
-            send(chat_id, "⚠️ Erro ao gerar a sugestão do dia.", with_menu=True)
-    elif text == "/alert_on":
-        state["alerts_enabled"] = True
-        save_state(state)
-        send(chat_id, f"✅ Alerta automático ativado para {ALERT_HOUR}:00.", with_menu=True)
-    elif text == "/alert_off":
-        state["alerts_enabled"] = False
-        save_state(state)
-        send(chat_id, "⛔ Alerta automático desativado.", with_menu=True)
-    elif text == "/status":
-        send(
-            chat_id,
-            "📌 Status do bot\n\n"
-            f"Alertas: {'ativados' if state.get('alerts_enabled') else 'desativados'}\n"
-            f"Hora do alerta: {ALERT_HOUR}:00\n"
-            f"Timezone: {TIMEZONE}",
-            with_menu=True,
+            "🤖 Bot analista PREMIUM online.\n\nToque nos botões abaixo.",
+            reply_markup=inline_menu(),
         )
     else:
-        send(
-            chat_id,
-            "Use os botões abaixo ou os comandos:\n"
-            "/today\n/top\n/best\n/tip\n/alert_on\n/alert_off\n/status",
-            with_menu=True,
-        )
+        response_text = handle_command(text, state)
+        send(chat_id, response_text, reply_markup=inline_menu())
 
     return jsonify({"ok": True})
 
