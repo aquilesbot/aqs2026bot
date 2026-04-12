@@ -32,53 +32,112 @@ def get_today_date():
     return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d")
 
 
-def score_match(event):
-    league = (event.get("strLeague") or "").lower()
-    home = event.get("strHomeTeam") or "Time A"
-    away = event.get("strAwayTeam") or "Time B"
+def get_team_strength(team_name):
+    team = (team_name or "").lower()
 
-    score = 50
-
-    big_leagues = {
-        "uefa champions league": 40,
-        "premier league": 32,
-        "la liga": 30,
-        "serie a": 28,
-        "bundesliga": 28,
-        "ligue 1": 24,
-        "brazilian serie a": 26,
-        "brasileirão": 26,
-        "libertadores": 30,
-        "sudamericana": 20,
+    giants = {
+        "real madrid": 96,
+        "barcelona": 94,
+        "manchester city": 97,
+        "arsenal": 90,
+        "liverpool": 92,
+        "chelsea": 86,
+        "manchester united": 84,
+        "bayern munich": 95,
+        "inter": 90,
+        "inter milan": 90,
+        "juventus": 87,
+        "milan": 86,
+        "napoli": 85,
+        "psg": 93,
+        "flamengo": 88,
+        "palmeiras": 89,
+        "corinthians": 80,
+        "são paulo": 82,
+        "santos": 78,
+        "botafogo": 83,
+        "atlético mineiro": 84,
+        "grêmio": 81,
+        "internacional": 80,
+        "rome": 79,
+        "roma": 83,
+        "lazio": 82,
+        "atalanta": 84,
+        "borussia dortmund": 85,
+        "atlético madrid": 88,
+        "sevilla": 80,
     }
 
-    for key, bonus in big_leagues.items():
+    return giants.get(team, 74)
+
+
+def league_bonus(league_name):
+    league = (league_name or "").lower()
+
+    mapping = {
+        "uefa champions league": 30,
+        "english premier league": 26,
+        "premier league": 26,
+        "spanish la liga": 24,
+        "la liga": 24,
+        "italian serie a": 22,
+        "serie a": 22,
+        "german bundesliga": 22,
+        "bundesliga": 22,
+        "french ligue 1": 18,
+        "ligue 1": 18,
+        "brazilian serie a": 20,
+        "brasileirão": 20,
+        "copa libertadores": 24,
+        "libertadores": 24,
+        "copa sudamericana": 16,
+        "sudamericana": 16,
+    }
+
+    for key, value in mapping.items():
         if key in league:
-            score += bonus
-            break
+            return value
+    return 10
 
-    giant_clubs = {
-        "real madrid", "barcelona", "manchester city", "arsenal", "liverpool",
-        "manchester united", "chelsea", "bayern munich", "inter", "juventus",
-        "milan", "psg", "flamengo", "palmeiras", "corinthians", "são paulo",
-        "santos", "botafogo", "atlético mineiro", "grêmio", "internacional"
-    }
 
-    if home.lower() in giant_clubs:
-        score += 8
-    if away.lower() in giant_clubs:
-        score += 8
+def predict_match(home, away, league):
+    home_strength = get_team_strength(home)
+    away_strength = get_team_strength(away)
+    bonus = league_bonus(league)
 
-    if score >= 95:
+    home_total = home_strength + 3
+    away_total = away_strength
+
+    diff = home_total - away_total
+    game_score = 50 + bonus + min((home_strength + away_strength) / 4, 25)
+
+    if abs(diff) <= 2:
+        prediction = "jogo muito equilibrado"
+        suggestion = "duelo aberto, tendência de equilíbrio"
+    elif diff > 2:
+        prediction = f"leve favoritismo de {home}"
+        suggestion = f"{home} tem mais força no confronto"
+    else:
+        prediction = f"leve favoritismo de {away}"
+        suggestion = f"{away} parece mais forte no confronto"
+
+    if game_score >= 95:
         insight = "jogo enorme do dia"
-    elif score >= 85:
+    elif game_score >= 88:
         insight = "confronto muito forte"
-    elif score >= 75:
+    elif game_score >= 78:
         insight = "bom jogo para acompanhar"
     else:
         insight = "jogo interessante do dia"
 
-    return score, insight
+    return {
+        "home_strength": round(home_total, 1),
+        "away_strength": round(away_total, 1),
+        "score": int(round(game_score)),
+        "prediction": prediction,
+        "suggestion": suggestion,
+        "insight": insight,
+    }
 
 
 def fetch_today_matches():
@@ -104,7 +163,7 @@ def fetch_today_matches():
         if not home or not away or not league:
             continue
 
-        score, insight = score_match(event)
+        analysis = predict_match(home, away, league)
 
         matches.append(
             {
@@ -112,13 +171,43 @@ def fetch_today_matches():
                 "away": away,
                 "league": league,
                 "time": event_time[:5] if len(event_time) >= 5 else event_time,
-                "score": score,
-                "insight": insight,
+                "score": analysis["score"],
+                "prediction": analysis["prediction"],
+                "suggestion": analysis["suggestion"],
+                "insight": analysis["insight"],
+                "home_strength": analysis["home_strength"],
+                "away_strength": analysis["away_strength"],
             }
         )
 
     matches.sort(key=lambda x: x["score"], reverse=True)
     return matches
+
+
+def format_best_match():
+    matches = fetch_today_matches()
+
+    if not matches:
+        return "⚠️ Não encontrei jogos de futebol para hoje."
+
+    best = matches[0]
+
+    lines = [
+        "🔥 Jogo destaque do dia",
+        "",
+        f"{best['home']} x {best['away']}",
+        f"🏆 {best['league']}",
+        f"🕒 {best['time']}",
+        f"📊 Nota do jogo: {best['score']}",
+        "",
+        "🧠 Análise:",
+        f"{best['prediction']}. {best['suggestion']}.",
+        "",
+        f"💡 Leitura rápida: {best['insight']}.",
+        "",
+        "Use /top para ver mais jogos do dia.",
+    ]
+    return "\n".join(lines)
 
 
 def format_top_matches(limit=5):
@@ -133,10 +222,11 @@ def format_top_matches(limit=5):
         lines.append(f"🏆 {match['league']}")
         lines.append(f"🕒 {match['time']}")
         lines.append(f"📊 Nota: {match['score']}")
+        lines.append(f"🔮 Previsão: {match['prediction']}")
         lines.append(f"💡 {match['insight']}")
         lines.append("")
 
-    lines.append("Use /top para ver uma lista maior.")
+    lines.append("Use /best para ver o grande destaque do dia.")
     return "\n".join(lines)
 
 
@@ -151,13 +241,14 @@ def format_full_list(limit=12):
         lines.append(
             f"{i}. {match['home']} x {match['away']} | {match['league']} | {match['time']} | Nota {match['score']}"
         )
+        lines.append(f"   🔮 {match['prediction']}")
 
     return "\n".join(lines)
 
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "service": "aqs2026bot"})
+    return jsonify({"ok": True, "service": "aqs2026bot-pro"})
 
 
 @app.route("/setup-webhook")
@@ -192,7 +283,11 @@ def webhook():
     if text == "/start":
         send(
             chat_id,
-            "🤖 Bot online.\n\nComandos disponíveis:\n/today - melhores jogos reais do dia\n/top - ranking maior",
+            "🤖 Bot analista online.\n\n"
+            "Comandos disponíveis:\n"
+            "/today - melhores jogos do dia\n"
+            "/top - ranking maior\n"
+            "/best - melhor jogo do dia",
         )
     elif text == "/today":
         try:
@@ -204,8 +299,16 @@ def webhook():
             send(chat_id, format_full_list(limit=12))
         except Exception:
             send(chat_id, "⚠️ Erro ao montar o ranking de jogos.")
+    elif text == "/best":
+        try:
+            send(chat_id, format_best_match())
+        except Exception:
+            send(chat_id, "⚠️ Erro ao gerar o destaque do dia.")
     else:
-        send(chat_id, "Comandos disponíveis:\n/start\n/today\n/top")
+        send(
+            chat_id,
+            "Comandos disponíveis:\n/start\n/today\n/top\n/best",
+        )
 
     return jsonify({"ok": True})
 
