@@ -2,7 +2,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,13 +11,13 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-SECRET = os.getenv("WEBHOOK_SECRET", "123456")
-BASE_URL = os.getenv("BASE_URL", "")
-TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
-ODDSPAPI_KEY = os.getenv("ODDSPAPI_KEY", "")
-BOOKMAKER_SLUG = os.getenv("BOOKMAKER_SLUG", "bet365")
-ALERT_HOUR = int(os.getenv("ALERT_HOUR", "9"))
+TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+SECRET = (os.getenv("WEBHOOK_SECRET") or "123456").strip()
+BASE_URL = (os.getenv("BASE_URL") or "").strip().rstrip("/")
+TIMEZONE = (os.getenv("TIMEZONE") or "America/Sao_Paulo").strip()
+ODDSPAPI_KEY = (os.getenv("ODDSPAPI_KEY") or "").strip()
+BOOKMAKER_SLUG = (os.getenv("BOOKMAKER_SLUG") or "bet365").strip()
+ALERT_HOUR = int((os.getenv("ALERT_HOUR") or "9").strip())
 
 ODDSPAPI_BASE = "https://api.oddspapi.io/v4"
 STATE_FILE = Path("/tmp/aqs2026bot_state.json")
@@ -36,11 +36,51 @@ TARGET_TOURNAMENT_HINTS = [
     "champions league",
 ]
 
-MARKET_NAME_CACHE = {}
+TEAM_STRENGTH = {
+    "real madrid": 97,
+    "barcelona": 94,
+    "manchester city": 98,
+    "arsenal": 92,
+    "liverpool": 93,
+    "chelsea": 85,
+    "manchester united": 83,
+    "newcastle": 82,
+    "tottenham": 84,
+    "aston villa": 81,
+    "bayern munich": 96,
+    "borussia dortmund": 86,
+    "inter": 91,
+    "inter milan": 91,
+    "juventus": 87,
+    "milan": 86,
+    "napoli": 86,
+    "roma": 83,
+    "lazio": 82,
+    "atalanta": 84,
+    "psg": 93,
+    "atletico madrid": 89,
+    "atlético madrid": 89,
+    "sevilla": 80,
+    "flamengo": 89,
+    "palmeiras": 90,
+    "botafogo": 84,
+    "atlético mineiro": 84,
+    "atletico mineiro": 84,
+    "corinthians": 80,
+    "são paulo": 82,
+    "santos": 78,
+    "grêmio": 81,
+    "gremio": 81,
+    "internacional": 80,
+}
+
 CACHE = {
     "tournaments": {"ts": 0, "data": []},
     "matches": {"ts": 0, "data": []},
+    "market_names": {"ts": 0, "data": {}},
 }
+
+started_scheduler = False
 
 
 def load_state():
@@ -56,27 +96,55 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def require_env():
+    errors = []
+
+    if not TOKEN:
+        errors.append("TELEGRAM_BOT_TOKEN não configurado")
+    if not BASE_URL:
+        errors.append("BASE_URL não configurado")
+    elif not BASE_URL.startswith("https://"):
+        errors.append("BASE_URL deve começar com https://")
+    if not SECRET:
+        errors.append("WEBHOOK_SECRET não configurado")
+
+    return errors
+
+
 def telegram_post(method, payload):
+    if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN não configurado.")
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
-    return requests.post(url, json=payload, timeout=30)
+    response = requests.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    telegram_post("sendMessage", payload)
+    try:
+        payload = {"chat_id": chat_id, "text": text}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        telegram_post("sendMessage", payload)
+    except Exception:
+        pass
 
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    telegram_post("editMessageText", payload)
+    try:
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        telegram_post("editMessageText", payload)
+    except Exception:
+        pass
 
 
 def answer_callback(callback_id, text=""):
-    telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+    try:
+        telegram_post("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+    except Exception:
+        pass
 
 
 def inline_menu():
@@ -126,26 +194,26 @@ def oddspapi_get(path, params=None):
         raise RuntimeError("ODDSPAPI_KEY não configurada.")
     p = dict(params or {})
     p["apiKey"] = ODDSPAPI_KEY
-    r = requests.get(f"{ODDSPAPI_BASE}{path}", params=p, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    response = requests.get(f"{ODDSPAPI_BASE}{path}", params=p, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def get_market_names():
-    global MARKET_NAME_CACHE
-    if MARKET_NAME_CACHE:
-        return MARKET_NAME_CACHE
+    age = time.time() - CACHE["market_names"]["ts"]
+    if age < 3600 and CACHE["market_names"]["data"]:
+        return CACHE["market_names"]["data"]
 
     try:
         markets = oddspapi_get("/markets", {"language": "en"})
-        MARKET_NAME_CACHE = {
-            str(item["marketId"]): item.get("marketName", f"Mercado {item['marketId']}")
+        parsed = {
+            str(item.get("marketId")): item.get("marketName", f"Mercado {item.get('marketId')}")
             for item in markets
         }
+        CACHE["market_names"] = {"ts": time.time(), "data": parsed}
+        return parsed
     except Exception:
-        MARKET_NAME_CACHE = {}
-
-    return MARKET_NAME_CACHE
+        return {}
 
 
 def get_target_tournaments():
@@ -169,15 +237,13 @@ def get_target_tournaments():
 
 def extract_player_prices(outcomes_obj):
     rows = []
-    for outcome_id, outcome in outcomes_obj.items():
+    for outcome_id, outcome in (outcomes_obj or {}).items():
         players = outcome.get("players", {})
-        for player_id, player_data in players.items():
+        for _, player_data in players.items():
             rows.append(
                 {
-                    "outcome_id": str(outcome_id),
-                    "player_id": str(player_id),
-                    "price": player_data.get("price"),
                     "label": player_data.get("bookmakerOutcomeId", str(outcome_id)),
+                    "price": player_data.get("price"),
                 }
             )
     return rows
@@ -195,16 +261,10 @@ def choose_bookmaker(bookmaker_odds):
 
 
 def confidence_percent(home_name, away_name):
-    strengths = {
-        "real madrid": 97, "barcelona": 94, "manchester city": 98, "arsenal": 92,
-        "liverpool": 93, "chelsea": 85, "manchester united": 83, "bayern munich": 96,
-        "inter": 91, "inter milan": 91, "juventus": 87, "milan": 86, "napoli": 86,
-        "psg": 93, "flamengo": 89, "palmeiras": 90, "botafogo": 84, "atlético mineiro": 84,
-        "corinthians": 80, "são paulo": 82, "grêmio": 81, "internacional": 80,
-    }
-    h = strengths.get(normalize(home_name), 74) + 3
-    a = strengths.get(normalize(away_name), 74)
+    h = TEAM_STRENGTH.get(normalize(home_name), 74) + 3
+    a = TEAM_STRENGTH.get(normalize(away_name), 74)
     diff = abs(h - a)
+
     if diff <= 1:
         return 52
     if diff == 2:
@@ -237,21 +297,15 @@ def build_match(fixture):
     markets = bookmaker.get("markets", {})
 
     parsed_markets = []
-    full_time_lines = []
+    main_odds = []
 
     for market_id, market_data in markets.items():
         market_name = market_names.get(str(market_id), f"Mercado {market_id}")
         rows = extract_player_prices(market_data.get("outcomes", {}))
-
         if not rows:
             continue
 
-        pretty_rows = []
-        for row in rows:
-            label = row["label"]
-            price = row["price"]
-            pretty_rows.append((label, price))
-
+        pretty_rows = [(row["label"], row["price"]) for row in rows]
         parsed_markets.append(
             {
                 "id": str(market_id),
@@ -261,7 +315,10 @@ def build_match(fixture):
         )
 
         if str(market_id) == "101":
-            full_time_lines = pretty_rows
+            main_odds = pretty_rows
+
+    if not parsed_markets:
+        return None
 
     p1 = fixture.get("participant1Name", "Time 1")
     p2 = fixture.get("participant2Name", "Time 2")
@@ -271,17 +328,16 @@ def build_match(fixture):
     suggestion = "evitar vencedor seco"
 
     if percent >= 84:
-        prediction = f"favoritismo claro de {p1 if percent >= 84 else p2}"
+        prediction = f"favoritismo claro de {p1}"
         suggestion = f"vitória de {p1}"
     elif percent >= 73:
         prediction = f"leve favoritismo de {p1}"
         suggestion = f"{p1} ou empate"
 
-    if not full_time_lines and parsed_markets:
-        full_time_lines = parsed_markets[0]["outcomes"]
+    if not main_odds and parsed_markets:
+        main_odds = parsed_markets[0]["outcomes"]
 
     return {
-        "fixture_id": fixture.get("fixtureId"),
         "home": p1,
         "away": p2,
         "league": fixture.get("tournamentName", "Campeonato"),
@@ -289,7 +345,7 @@ def build_match(fixture):
         "bookmaker": bookmaker_key,
         "bookmaker_link": bookmaker.get("fixturePath"),
         "markets": parsed_markets,
-        "main_odds": full_time_lines,
+        "main_odds": main_odds,
         "confidence_percent": percent,
         "prediction": prediction,
         "suggestion": suggestion,
@@ -332,7 +388,6 @@ def fetch_today_matches():
 def format_main_odds(match):
     if not match["main_odds"]:
         return "Odds principais não disponíveis."
-
     parts = []
     for label, price in match["main_odds"][:3]:
         parts.append(f"{label}: {price}")
@@ -342,7 +397,7 @@ def format_main_odds(match):
 def format_best():
     matches = fetch_today_matches()
     if not matches:
-        return "⚠️ Nenhum jogo com odds encontrado agora."
+        return "⚠️ Nenhum jogo com odds encontrado agora.", inline_menu()
 
     m = matches[0]
     return "\n".join([
@@ -442,19 +497,17 @@ def format_safe():
     return "\n".join(lines), inline_menu()
 
 
-def format_tip():
-    return format_best()
-
-
 def format_status():
     state = load_state()
+    errors = require_env()
     return (
         "📌 Status do bot\n\n"
         f"Alertas: {'ativados' if state.get('alerts_enabled') else 'desativados'}\n"
         f"Hora do alerta: {ALERT_HOUR}:00\n"
         f"Timezone: {TIMEZONE}\n"
         f"OddsPapi: {'configurada' if ODDSPAPI_KEY else 'não configurada'}\n"
-        f"Bookmaker: {BOOKMAKER_SLUG}"
+        f"Bookmaker: {BOOKMAKER_SLUG}\n"
+        f"Webhook pronto: {'sim' if not errors else 'não'}"
     ), inline_menu()
 
 
@@ -503,7 +556,7 @@ def handle_command(text, state):
     if text == "/best":
         return format_best()
     if text == "/tip":
-        return format_tip()
+        return format_best()
     if text == "/odds":
         return format_odds()
     if text == "/markets":
@@ -537,24 +590,41 @@ def ensure_scheduler():
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "service": "aqs2026bot-oddspapi"})
+    return jsonify(
+        {
+            "ok": True,
+            "service": "aqs2026bot-stable",
+            "env_errors": require_env(),
+            "odds_configured": bool(ODDSPAPI_KEY),
+        }
+    )
 
 
 @app.route("/setup-webhook")
 def setup():
-    response = telegram_post(
-        "setWebhook",
-        {
-            "url": f"{BASE_URL}/webhook",
-            "secret_token": SECRET,
-            "drop_pending_updates": True,
-        },
-    )
-    return jsonify(response.json())
+    errors = require_env()
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+
+    try:
+        response = telegram_post(
+            "setWebhook",
+            {
+                "url": f"{BASE_URL}/webhook",
+                "secret_token": SECRET,
+                "drop_pending_updates": True,
+            },
+        )
+        return jsonify({"ok": True, "telegram": response})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    if not TOKEN:
+        return jsonify({"ok": False, "error": "token não configurado"}), 500
+
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
     if secret != SECRET:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -581,8 +651,8 @@ def webhook():
             text, markup = handle_command(f"/{action}", state)
             edit_message(chat_id, message_id, text, reply_markup=markup)
             answer_callback(callback_id, "Atualizado")
-        except Exception:
-            answer_callback(callback_id, "Erro ao atualizar")
+        except Exception as e:
+            answer_callback(callback_id, f"Erro: {str(e)[:60]}")
         return jsonify({"ok": True})
 
     msg = data.get("message", {})
@@ -607,7 +677,7 @@ def webhook():
             response_text, markup = handle_command(text, state)
             send(chat_id, response_text, reply_markup=markup)
         except Exception as e:
-            send(chat_id, f"⚠️ Erro ao processar dados: {str(e)}", reply_markup=inline_menu())
+            send(chat_id, f"⚠️ Erro ao processar dados: {str(e)[:150]}", reply_markup=inline_menu())
 
     return jsonify({"ok": True})
 
