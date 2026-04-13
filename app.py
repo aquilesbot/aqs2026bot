@@ -2,8 +2,8 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
@@ -24,6 +24,7 @@ STATE_FILE = Path("/tmp/aqs2026bot_state.json")
 
 TARGET_TOURNAMENT_HINTS = [
     "premier league",
+    "epl",
     "laliga",
     "la liga",
     "serie a",
@@ -34,6 +35,7 @@ TARGET_TOURNAMENT_HINTS = [
     "campeonato brasileiro",
     "libertadores",
     "champions league",
+    "uefa champions",
 ]
 
 TEAM_STRENGTH = {
@@ -225,11 +227,22 @@ def get_target_tournaments():
     selected = []
 
     for t in tournaments:
+        tournament_id = t.get("tournamentId")
         name = normalize(t.get("tournamentName"))
         slug = normalize(t.get("tournamentSlug"))
         combined = f"{name} {slug}"
+
+        if not tournament_id:
+            continue
+
         if any(hint in combined for hint in TARGET_TOURNAMENT_HINTS):
-            selected.append(t)
+            selected.append(
+                {
+                    "tournamentId": int(tournament_id),
+                    "tournamentName": t.get("tournamentName", "Campeonato"),
+                    "tournamentSlug": t.get("tournamentSlug", ""),
+                }
+            )
 
     CACHE["tournaments"] = {"ts": time.time(), "data": selected}
     return selected
@@ -362,23 +375,42 @@ def fetch_today_matches():
     if not tournaments:
         return []
 
-    tournament_ids = ",".join(str(t["tournamentId"]) for t in tournaments[:12])
+    tournament_ids = []
+    for t in tournaments:
+        tid = t.get("tournamentId")
+        if isinstance(tid, int) and tid not in tournament_ids:
+            tournament_ids.append(tid)
 
-    odds_rows = oddspapi_get(
-        "/odds-by-tournaments",
-        {
-            "tournamentIds": tournament_ids,
-            "bookmaker": BOOKMAKER_SLUG,
-            "oddsFormat": "decimal",
-            "verbosity": 3,
-        },
-    )
+    tournament_ids = tournament_ids[:8]
 
     matches = []
-    for row in odds_rows:
-        item = build_match(row)
-        if item:
-            matches.append(item)
+    chunk_size = 3
+
+    for i in range(0, len(tournament_ids), chunk_size):
+        chunk = tournament_ids[i:i + chunk_size]
+        if not chunk:
+            continue
+
+        ids_param = ",".join(str(x) for x in chunk)
+
+        try:
+            odds_rows = oddspapi_get(
+                "/odds-by-tournaments",
+                {
+                    "tournamentIds": ids_param,
+                    "bookmaker": BOOKMAKER_SLUG,
+                    "oddsFormat": "decimal",
+                    "verbosity": 3,
+                },
+            )
+
+            for row in odds_rows:
+                item = build_match(row)
+                if item:
+                    matches.append(item)
+
+        except Exception:
+            continue
 
     matches.sort(key=lambda x: x["confidence_percent"], reverse=True)
     CACHE["matches"] = {"ts": time.time(), "data": matches}
@@ -499,15 +531,13 @@ def format_safe():
 
 def format_status():
     state = load_state()
-    errors = require_env()
     return (
         "📌 Status do bot\n\n"
         f"Alertas: {'ativados' if state.get('alerts_enabled') else 'desativados'}\n"
         f"Hora do alerta: {ALERT_HOUR}:00\n"
         f"Timezone: {TIMEZONE}\n"
         f"OddsPapi: {'configurada' if ODDSPAPI_KEY else 'não configurada'}\n"
-        f"Bookmaker: {BOOKMAKER_SLUG}\n"
-        f"Webhook pronto: {'sim' if not errors else 'não'}"
+        f"Bookmaker: {BOOKMAKER_SLUG}"
     ), inline_menu()
 
 
