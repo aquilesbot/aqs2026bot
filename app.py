@@ -74,6 +74,11 @@ TEAM_STRENGTH = {
     "grêmio": 81,
     "gremio": 81,
     "internacional": 80,
+    "athletic bilbao": 82,
+    "real betis": 81,
+    "real betis seville": 81,
+    "elche": 72,
+    "elche cf": 72,
 }
 
 CACHE = {
@@ -184,17 +189,14 @@ def normalize(text):
 def parse_start_time_to_local(start_time_str):
     if not start_time_str:
         return "Sem horário"
-
     try:
         raw = start_time_str.strip()
-
         if raw.endswith("Z"):
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         else:
             dt = datetime.fromisoformat(raw)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-
         local_dt = dt.astimezone(ZoneInfo(TIMEZONE))
         return local_dt.strftime("%H:%M")
     except Exception:
@@ -283,32 +285,63 @@ def choose_bookmaker(bookmaker_odds):
     return first_key, bookmaker_odds[first_key]
 
 
-def confidence_percent(home_name, away_name):
-    h = TEAM_STRENGTH.get(normalize(home_name), 74) + 3
-    a = TEAM_STRENGTH.get(normalize(away_name), 74)
-    diff = abs(h - a)
+def analyze_match(home_name, away_name):
+    home = normalize(home_name)
+    away = normalize(away_name)
 
-    if diff <= 1:
-        return 52
-    if diff == 2:
-        return 57
-    if diff == 3:
-        return 61
-    if diff == 4:
-        return 65
-    if diff == 5:
-        return 69
-    if diff == 6:
-        return 73
-    if diff == 7:
-        return 76
-    if diff == 8:
-        return 80
-    if diff == 9:
-        return 84
-    if diff == 10:
-        return 87
-    return 90
+    home_strength = TEAM_STRENGTH.get(home, 75)
+    away_strength = TEAM_STRENGTH.get(away, 75)
+
+    # vantagem de casa pequena e realista
+    home_strength += 2
+
+    diff = home_strength - away_strength
+    abs_diff = abs(diff)
+
+    if diff > 0:
+        winner = home_name
+    elif diff < 0:
+        winner = away_name
+    else:
+        winner = "Empate"
+
+    if abs_diff <= 1:
+        percent = 52
+    elif abs_diff <= 3:
+        percent = 60
+    elif abs_diff <= 5:
+        percent = 68
+    elif abs_diff <= 7:
+        percent = 75
+    elif abs_diff <= 10:
+        percent = 82
+    else:
+        percent = 88
+
+    if winner == "Empate":
+        prediction = "jogo muito equilibrado"
+        suggestion = "evitar vencedor seco"
+        risk = "alto"
+    elif percent >= 80:
+        prediction = f"favoritismo claro de {winner}"
+        suggestion = f"vitória de {winner}"
+        risk = "baixo"
+    elif percent >= 65:
+        prediction = f"leve favoritismo de {winner}"
+        suggestion = f"{winner} ou empate"
+        risk = "médio"
+    else:
+        prediction = f"ligeira vantagem de {winner}"
+        suggestion = "jogo imprevisível"
+        risk = "alto"
+
+    return {
+        "winner": winner,
+        "confidence": percent,
+        "prediction": prediction,
+        "suggestion": suggestion,
+        "risk": risk,
+    }
 
 
 def prettify_outcome_label(raw_label, home, away, index=0, market_name=""):
@@ -343,7 +376,7 @@ def classify_market(name):
 
     if any(x in n for x in ["1x2", "full time result", "match result"]):
         return "main"
-    if any(x in n for x in ["draw no bet"]):
+    if "draw no bet" in n:
         return "dnb"
     if any(x in n for x in ["both teams to score", "btts"]):
         return "btts"
@@ -407,17 +440,7 @@ def build_match(fixture):
                 main_odds = m["outcomes"][:3]
                 break
 
-    percent = confidence_percent(home, away)
-
-    prediction = "jogo equilibrado"
-    suggestion = "evitar vencedor seco"
-
-    if percent >= 84:
-        prediction = f"favoritismo claro de {home}"
-        suggestion = f"vitória de {home}"
-    elif percent >= 73:
-        prediction = f"leve favoritismo de {home}"
-        suggestion = f"{home} ou empate"
+    analysis = analyze_match(home, away)
 
     return {
         "home": home,
@@ -427,10 +450,10 @@ def build_match(fixture):
         "bookmaker": bookmaker_key,
         "markets": sort_markets(parsed_markets),
         "main_odds": main_odds,
-        "confidence_percent": percent,
-        "prediction": prediction,
-        "suggestion": suggestion,
-        "risk": "médio-baixo" if percent >= 75 else "médio" if percent >= 60 else "alto",
+        "confidence_percent": analysis["confidence"],
+        "prediction": analysis["prediction"],
+        "suggestion": analysis["suggestion"],
+        "risk": analysis["risk"],
     }
 
 
@@ -591,7 +614,8 @@ def format_top():
         lines.append(f"{i}. {m['home']} x {m['away']}")
         lines.append(f"🏆 {m['league']} | 🕒 {m['time']}")
         lines.append(f"🎯 {m['suggestion']}")
-        lines.append(f"📌 {m['confidence_percent']}%")
+        lines.append(f"📌 Assertividade: {m['confidence_percent']}%")
+        lines.append(f"⚠️ Risco: {m['risk']}")
         lines.append("")
 
     return "\n".join(lines), inline_menu()
